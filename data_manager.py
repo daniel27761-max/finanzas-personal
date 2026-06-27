@@ -1,116 +1,112 @@
 # =============================================================================
 # data_manager.py
-# Responsabilidad única: toda la lógica de persistencia de datos.
-# Lee y escribe en 'finanzas.xlsx' usando pandas + openpyxl.
+# Persistencia de datos en Google Sheets usando gspread.
+# Cada usuario tiene dos hojas propias: "Transacciones_<user>" y "Presupuestos_<user>"
 # =============================================================================
 
-import openpyxl
+import gspread
 import pandas as pd
-from pathlib import Path
+import streamlit as st
 from datetime import date
+from google.oauth2.service_account import Credentials
 
 # ---------------------------------------------------------------------------
-# Constantes del dominio
+# Constantes
 # ---------------------------------------------------------------------------
-
-ARCHIVO_EXCEL = "finanzas.xlsx"
-HOJA_TRANSACCIONES = "Transacciones"
-HOJA_PRESUPUESTOS = "Presupuestos"
 
 CATEGORIAS_DEFAULT = [
-    "Alimentación",
-    "Transporte",
-    "Ocio",
-    "Hogar",
-    "Facturas",
-    "Salud",
-    "Ingresos",
+    "Alimentación", "Transporte", "Ocio", "Hogar",
+    "Facturas", "Salud", "Ingresos",
 ]
-
-# Alias para compatibilidad con ocr_engine.py
 CATEGORIAS = CATEGORIAS_DEFAULT
-
 TIPOS = ["Gasto", "Ingreso"]
-
 COLUMNAS_TX = ["Fecha", "Comercio", "Importe", "Tipo", "Categoría"]
 COLUMNAS_PRESUPUESTO = ["Categoría", "Límite"]
 
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 # ---------------------------------------------------------------------------
-# Inicialización
+# Conexión a Google Sheets (cacheada para no reconectar en cada rerun)
 # ---------------------------------------------------------------------------
 
-def _crear_excel_vacio() -> None:
-    with pd.ExcelWriter(ARCHIVO_EXCEL, engine="openpyxl") as writer:
-        pd.DataFrame(columns=COLUMNAS_TX).to_excel(
-            writer, sheet_name=HOJA_TRANSACCIONES, index=False
-        )
-        pd.DataFrame({
-            "Categoría": CATEGORIAS_DEFAULT,
-            "Límite": [0.0] * len(CATEGORIAS_DEFAULT),
-        }).to_excel(writer, sheet_name=HOJA_PRESUPUESTOS, index=False)
+@st.cache_resource
+def _get_client() -> gspread.Client:
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=SCOPES
+    )
+    return gspread.authorize(creds)
+
+
+def _get_spreadsheet() -> gspread.Spreadsheet:
+    client = _get_client()
+    return client.open_by_key(st.secrets["SPREADSHEET_ID"])
+
+
+def _get_or_create_hoja(nombre: str, cabeceras: list[str]) -> gspread.Worksheet:
+    """Devuelve la hoja con ese nombre, creándola si no existe."""
+    ss = _get_spreadsheet()
+    try:
+        return ss.worksheet(nombre)
+    except gspread.WorksheetNotFound:
+        hoja = ss.add_worksheet(title=nombre, rows=1000, cols=len(cabeceras))
+        hoja.append_row(cabeceras)
+        return hoja
+
+
+def _nombre_tx(usuario: str) -> str:
+    return f"Transacciones_{usuario}"
+
+
+def _nombre_pres(usuario: str) -> str:
+    return f"Presupuestos_{usuario}"
 
 
 # ---------------------------------------------------------------------------
 # Carga de datos
 # ---------------------------------------------------------------------------
 
-def cargar_transacciones() -> pd.DataFrame:
-    if not Path(ARCHIVO_EXCEL).exists():
-        _crear_excel_vacio()
+def cargar_transacciones(usuario: str) -> pd.DataFrame:
+    hoja = _get_or_create_hoja(_nombre_tx(usuario), COLUMNAS_TX)
+    datos = hoja.get_all_records()
+    if not datos:
         return pd.DataFrame(columns=COLUMNAS_TX)
-
-    df = pd.read_excel(ARCHIVO_EXCEL, sheet_name=HOJA_TRANSACCIONES, engine="openpyxl")
-
+    df = pd.DataFrame(datos)
     for col in COLUMNAS_TX:
         if col not in df.columns:
             df[col] = None
-
-    if not df.empty:
-        df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce").dt.date
-
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce").dt.date
+    df["Importe"] = pd.to_numeric(df["Importe"], errors="coerce")
     return df[COLUMNAS_TX]
 
 
-def cargar_presupuestos() -> pd.DataFrame:
-    if not Path(ARCHIVO_EXCEL).exists():
-        _crear_excel_vacio()
-
-    # Manejar archivos creados con el nombre de hoja incorrecto (bug previo)
-    wb = openpyxl.load_workbook(ARCHIVO_EXCEL)
-    hojas = wb.sheetnames
-    wb.close()
-
-    if HOJA_PRESUPUESTOS not in hojas:
-        if "Presupuesto" in hojas:
-            wb = openpyxl.load_workbook(ARCHIVO_EXCEL)
-            wb["Presupuesto"].title = HOJA_PRESUPUESTOS
-            wb.save(ARCHIVO_EXCEL)
-            wb.close()
-        else:
-            _crear_excel_vacio()
-
-    df = pd.read_excel(ARCHIVO_EXCEL, sheet_name=HOJA_PRESUPUESTOS, engine="openpyxl")
-
-    # Añadir categorías que falten con límite 0
+def cargar_presupuestos(usuario: str) -> pd.DataFrame:
+    hoja = _get_or_create_hoja(_nombre_pres(usuario), COLUMNAS_PRESUPUESTO)
+    datos = hoja.get_all_records()
+    if not datos:
+        # Inicializar con categorías por defecto
+        df = pd.DataFrame({
+            "Categoría": CATEGORIAS_DEFAULT,
+            "Límite": [0.0] * len(CATEGORIAS_DEFAULT),
+        })
+        hoja.append_rows(df.values.tolist())
+        return df
+    df = pd.DataFrame(datos)
+    # Añadir categorías nuevas que falten
     cats_existentes = set(df["Categoría"].tolist())
-    filas_nuevas = [
-        {"Categoría": cat, "Límite": 0.0}
-        for cat in CATEGORIAS_DEFAULT
-        if cat not in cats_existentes
-    ]
-    if filas_nuevas:
-        df = pd.concat([df, pd.DataFrame(filas_nuevas)], ignore_index=True)
-
+    nuevas = [{"Categoría": c, "Límite": 0.0} for c in CATEGORIAS_DEFAULT if c not in cats_existentes]
+    if nuevas:
+        hoja.append_rows([[r["Categoría"], r["Límite"]] for r in nuevas])
+        df = pd.concat([df, pd.DataFrame(nuevas)], ignore_index=True)
+    df["Límite"] = pd.to_numeric(df["Límite"], errors="coerce").fillna(0.0)
     return df[COLUMNAS_PRESUPUESTO]
 
 
-def obtener_categorias() -> list[str]:
-    """Devuelve la lista actual de categorías desde el Excel."""
-    if not Path(ARCHIVO_EXCEL).exists():
-        return CATEGORIAS_DEFAULT.copy()
+def obtener_categorias(usuario: str) -> list[str]:
     try:
-        df = pd.read_excel(ARCHIVO_EXCEL, sheet_name=HOJA_PRESUPUESTOS, engine="openpyxl")
+        df = cargar_presupuestos(usuario)
         return df["Categoría"].tolist()
     except Exception:
         return CATEGORIAS_DEFAULT.copy()
@@ -123,11 +119,10 @@ def obtener_categorias() -> list[str]:
 def es_duplicado(df: pd.DataFrame, fecha: date, comercio: str, importe: float) -> bool:
     if df.empty:
         return False
-    comercio_norm = comercio.strip().lower()
     mask = (
         (df["Fecha"] == fecha) &
-        (df["Comercio"].str.strip().str.lower() == comercio_norm) &
-        (df["Importe"].round(2) == round(importe, 2))
+        (df["Comercio"].str.strip().str.lower() == comercio.strip().lower()) &
+        (pd.to_numeric(df["Importe"], errors="coerce").round(2) == round(importe, 2))
     )
     return mask.any()
 
@@ -136,17 +131,10 @@ def es_duplicado(df: pd.DataFrame, fecha: date, comercio: str, importe: float) -
 # Escritura
 # ---------------------------------------------------------------------------
 
-def _guardar_todo(df_tx: pd.DataFrame, df_pres: pd.DataFrame) -> None:
-    with pd.ExcelWriter(ARCHIVO_EXCEL, engine="openpyxl") as writer:
-        df_tx.to_excel(writer, sheet_name=HOJA_TRANSACCIONES, index=False)
-        df_pres.to_excel(writer, sheet_name=HOJA_PRESUPUESTOS, index=False)
-
-
 def añadir_transaccion(
-    fecha: date, comercio: str, importe: float, tipo: str, categoria: str
+    usuario: str, fecha: date, comercio: str, importe: float, tipo: str, categoria: str
 ) -> tuple[bool, str]:
-    df_tx = cargar_transacciones()
-    df_pres = cargar_presupuestos()
+    df_tx = cargar_transacciones(usuario)
 
     if es_duplicado(df_tx, fecha, comercio, importe):
         return False, (
@@ -154,41 +142,29 @@ def añadir_transaccion(
             f"en '{comercio}' por {importe:.2f} €. Operación cancelada."
         )
 
-    nueva_fila = pd.DataFrame([{
-        "Fecha": fecha,
-        "Comercio": comercio.strip(),
-        "Importe": round(importe, 2),
-        "Tipo": tipo,
-        "Categoría": categoria,
-    }])
-    df_tx = pd.concat([df_tx, nueva_fila], ignore_index=True)
-    _guardar_todo(df_tx, df_pres)
+    hoja = _get_or_create_hoja(_nombre_tx(usuario), COLUMNAS_TX)
+    hoja.append_row([str(fecha), comercio.strip(), round(importe, 2), tipo, categoria])
     return True, f"✅ Registro añadido: {comercio} — {importe:.2f} € ({categoria})"
 
 
-def actualizar_presupuestos(nuevos_limites: dict[str, float]) -> None:
-    df_tx = cargar_transacciones()
-    df_pres = cargar_presupuestos()
-    for cat, limite in nuevos_limites.items():
-        df_pres.loc[df_pres["Categoría"] == cat, "Límite"] = round(limite, 2)
-    _guardar_todo(df_tx, df_pres)
+def actualizar_presupuestos(usuario: str, nuevos_limites: dict[str, float]) -> None:
+    hoja = _get_or_create_hoja(_nombre_pres(usuario), COLUMNAS_PRESUPUESTO)
+    datos = hoja.get_all_records()
+    for i, fila in enumerate(datos, start=2):  # fila 1 = cabecera
+        cat = fila["Categoría"]
+        if cat in nuevos_limites:
+            hoja.update_cell(i, 2, round(nuevos_limites[cat], 2))
 
 
-def añadir_categoria(nombre: str) -> tuple[bool, str]:
-    """Añade una nueva categoría personalizada al Excel."""
+def añadir_categoria(usuario: str, nombre: str) -> tuple[bool, str]:
     nombre = nombre.strip().title()
     if not nombre:
         return False, "El nombre no puede estar vacío."
-
-    df_tx = cargar_transacciones()
-    df_pres = cargar_presupuestos()
-
+    df_pres = cargar_presupuestos(usuario)
     if nombre in df_pres["Categoría"].tolist():
         return False, f"La categoría '{nombre}' ya existe."
-
-    nueva = pd.DataFrame([{"Categoría": nombre, "Límite": 0.0}])
-    df_pres = pd.concat([df_pres, nueva], ignore_index=True)
-    _guardar_todo(df_tx, df_pres)
+    hoja = _get_or_create_hoja(_nombre_pres(usuario), COLUMNAS_PRESUPUESTO)
+    hoja.append_row([nombre, 0.0])
     return True, f"✅ Categoría '{nombre}' añadida correctamente."
 
 
@@ -199,10 +175,12 @@ def añadir_categoria(nombre: str) -> tuple[bool, str]:
 def calcular_gasto_por_categoria(df: pd.DataFrame, mes: int, año: int) -> pd.Series:
     if df.empty:
         return pd.Series(dtype=float)
+    df = df.copy()
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
     mask = (
         (df["Tipo"] == "Gasto") &
-        (pd.to_datetime(df["Fecha"]).dt.month == mes) &
-        (pd.to_datetime(df["Fecha"]).dt.year == año)
+        (df["Fecha"].dt.month == mes) &
+        (df["Fecha"].dt.year == año)
     )
     return df[mask].groupby("Categoría")["Importe"].sum()
 
@@ -210,16 +188,12 @@ def calcular_gasto_por_categoria(df: pd.DataFrame, mes: int, año: int) -> pd.Se
 def calcular_resumen_mensual(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["Mes", "Ingresos", "Gastos"])
-
-    df_copia = df.copy()
-    df_copia["Fecha"] = pd.to_datetime(df_copia["Fecha"])
-    df_copia["Mes"] = df_copia["Fecha"].dt.to_period("M").astype(str)
-
-    resumen = df_copia.groupby(["Mes", "Tipo"])["Importe"].sum().unstack(fill_value=0)
-
+    df = df.copy()
+    df["Fecha"] = pd.to_datetime(df["Fecha"], errors="coerce")
+    df["Mes"] = df["Fecha"].dt.to_period("M").astype(str)
+    resumen = df.groupby(["Mes", "Tipo"])["Importe"].sum().unstack(fill_value=0)
     for col in ["Gasto", "Ingreso"]:
         if col not in resumen.columns:
             resumen[col] = 0.0
-
     resumen = resumen.rename(columns={"Gasto": "Gastos", "Ingreso": "Ingresos"})
     return resumen.reset_index().sort_values("Mes")[["Mes", "Ingresos", "Gastos"]]
