@@ -167,9 +167,10 @@ def seccion_añadir_transaccion() -> None:
         tipo = st.selectbox("Tipo", dm.TIPOS)
 
         # Índice por defecto basado en sugerencia OCR
-        cat_sugerida = st.session_state.get("ocr_categoria", dm.CATEGORIAS[0])
-        idx_cat = dm.CATEGORIAS.index(cat_sugerida) if cat_sugerida in dm.CATEGORIAS else 0
-        categoria = st.selectbox("Categoría", dm.CATEGORIAS, index=idx_cat)
+        cats_dinamicas = dm.obtener_categorias()
+        cat_sugerida = st.session_state.get("ocr_categoria", cats_dinamicas[0])
+        idx_cat = cats_dinamicas.index(cat_sugerida) if cat_sugerida in cats_dinamicas else 0
+        categoria = st.selectbox("Categoría", cats_dinamicas, index=idx_cat)
 
         enviado = st.form_submit_button("💾 Guardar registro", use_container_width=True)
 
@@ -202,7 +203,7 @@ def seccion_presupuestos() -> None:
     st.subheader(f"📊 Progreso — {hoy.strftime('%B %Y')}")
 
     # Mostrar barras de progreso por categoría (solo gastos, no ingresos)
-    cats_gasto = [c for c in dm.CATEGORIAS if c != "Ingresos"]
+    cats_gasto = [c for c in categorias_actuales if c != "Ingresos"]
     hay_presupuesto = False
     for _, fila in df_pres[df_pres["Categoría"].isin(cats_gasto)].iterrows():
         cat = fila["Categoría"]

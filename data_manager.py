@@ -20,7 +20,7 @@ HOJA_PRESUPUESTOS = "Presupuestos"
 
 # Categorías fijas de la aplicación. Cualquier cambio aquí se propaga
 # automáticamente al desplegable de la UI.
-CATEGORIAS = [
+CATEGORIAS_DEFAULT = [
     "Alimentación",
     "Transporte",
     "Ocio",
@@ -29,6 +29,22 @@ CATEGORIAS = [
     "Salud",
     "Ingresos",
 ]
+
+def obtener_categorias() -> list[str]:
+    """
+    Devuelve la lista actual de categorías leyéndola desde el Excel.
+    Si el archivo no existe aún, devuelve las categorías por defecto.
+    """
+    if not Path(ARCHIVO_EXCEL).exists():
+        return CATEGORIAS_DEFAULT.copy()
+    try:
+        df = pd.read_excel(ARCHIVO_EXCEL, sheet_name=HOJA_PRESUPUESTOS, engine="openpyxl")
+        return df["Categoría"].tolist()
+    except Exception:
+        return CATEGORIAS_DEFAULT.copy()
+
+# Alias para compatibilidad con el resto del código
+CATEGORIAS = CATEGORIAS_DEFAULT
 
 # Tipos posibles de movimiento
 TIPOS = ["Gasto", "Ingreso"]
@@ -274,7 +290,33 @@ def actualizar_presupuestos(nuevos_limites: dict[str, float]) -> None:
 # Cálculos para el Dashboard
 # ---------------------------------------------------------------------------
 
-def calcular_gasto_por_categoria(df: pd.DataFrame, mes: int, año: int) -> pd.Series:
+def añadir_categoria(nombre: str) -> tuple[bool, str]:
+    """
+    Añade una nueva categoría personalizada al Excel.
+
+    Args:
+        nombre: Nombre de la nueva categoría (se normaliza con título).
+
+    Returns:
+        Tupla (éxito: bool, mensaje: str).
+    """
+    nombre = nombre.strip().title()
+    if not nombre:
+        return False, "El nombre no puede estar vacío."
+
+    df_tx = cargar_transacciones()
+    df_pres = cargar_presupuestos()
+
+    if nombre in df_pres["Categoría"].tolist():
+        return False, f"La categoría '{nombre}' ya existe."
+
+    nueva = pd.DataFrame([{"Categoría": nombre, "Límite": 0.0}])
+    df_pres = pd.concat([df_pres, nueva], ignore_index=True)
+    _guardar_todo(df_tx, df_pres)
+    return True, f"✅ Categoría '{nombre}' añadida correctamente."
+
+
+(df: pd.DataFrame, mes: int, año: int) -> pd.Series:
     """
     Suma los gastos agrupados por categoría para un mes y año concretos.
 
