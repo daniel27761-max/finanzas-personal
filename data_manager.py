@@ -60,7 +60,7 @@ def _crear_excel_vacio() -> None:
             "Categoría": CATEGORIAS,
             "Límite": [0.0] * len(CATEGORIAS),
         })
-        df_pres.to_excel(writer, sheet_name=HOJA_PRESUPUESTO, index=False)
+        df_pres.to_excel(writer, sheet_name=HOJA_PRESUPUESTOS, index=False)
 
 
 def cargar_transacciones() -> pd.DataFrame:
