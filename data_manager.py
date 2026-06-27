@@ -110,11 +110,25 @@ def cargar_presupuestos() -> pd.DataFrame:
     if not Path(ARCHIVO_EXCEL).exists():
         _crear_excel_vacio()
 
+import openpyxl
+    wb = openpyxl.load_workbook(ARCHIVO_EXCEL)
+    hojas = wb.sheetnames
+    wb.close()
+
+    if HOJA_PRESUPUESTOS not in hojas:
+        if "Presupuesto" in hojas:
+            wb = openpyxl.load_workbook(ARCHIVO_EXCEL)
+            wb["Presupuesto"].title = HOJA_PRESUPUESTOS
+            wb.save(ARCHIVO_EXCEL)
+            wb.close()
+        else:
+            _crear_excel_vacio()
+
     df = pd.read_excel(
         ARCHIVO_EXCEL,
         sheet_name=HOJA_PRESUPUESTOS,
         engine="openpyxl",
-    )
+    )    )
 
     # Garantizar que todas las categorías actuales están presentes
     cats_existentes = set(df["Categoría"].tolist())
