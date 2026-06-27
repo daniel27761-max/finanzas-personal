@@ -36,8 +36,8 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 
 USUARIOS = {
-    "daniel": "users.daniel.password",
-    "pareja": "users.pareja.password",
+    "Daniel": "users.daniel.password",
+    "Yarisa": "users.pareja.password",
 }
 
 def login() -> None:
